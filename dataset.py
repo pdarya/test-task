@@ -1,5 +1,6 @@
 from collections import defaultdict, OrderedDict
 import io
+import json
 import os
 
 import numpy as np
@@ -41,7 +42,7 @@ class DemoDataset(IterableDataset):
         self.actions_num = actions_num  # actions to predict
 
         self.stats = defaultdict(lambda: 0)
-        self.normalization_coef = {}
+        self.normalization_coefs = {}
 
     def size(self):
         """ number of ts stored """
@@ -149,13 +150,15 @@ class DemoDataset(IterableDataset):
         # prepare sample
         sample = {}
         # add observation
-        sample['qpos'] = self.episodes_buffer[episode_idx]['qpos'][ts_idx]
-        sample['cameras'] = self.episodes_buffer[episode_idx]['cameras'][ts_idx]
+        sample['qpos'] = (self.episodes_buffer[episode_idx]['qpos'][ts_idx]
+                          - self.normalization_coefs['qpos_mean']) / self.normalization_coefs['qpos_std']
+        sample['cameras'] = self.episodes_buffer[episode_idx]['cameras'][ts_idx] / 255.
 
         # add actions (target)
         actions_end_idx = min(ts_idx + self.actions_num, episode_size)
         actions_idxs = list(range(ts_idx, actions_end_idx))
-        actions_seq = self.episodes_buffer[episode_idx]['actions'][actions_idxs]
+        actions_seq = (self.episodes_buffer[episode_idx]['actions'][actions_idxs] -
+                       self.normalization_coefs['actions_mean']) / self.normalization_coefs['actions_std']
         if len(actions_seq) < self.actions_num:
             actions_seq = np.concatenate(
                 [actions_seq, np.zeros((self.actions_num - len(actions_seq), *actions_seq.shape[1:]), dtype=np.float32)],  # TODO
@@ -173,25 +176,25 @@ class DemoDataset(IterableDataset):
     def track_stats(self):
         """ after current episode is loaded """
         for key, value in self.current_episode.items():
+            print(key, value.shape)
             if key == 'mask':
                 continue
             if key == 'cameras':
-                # TODO / 255 ?
-                self.stats[f'{key}_sum'] += value.sum(axis=[0, 2, 3])
-                self.stats[f'{key}_sum2'] += (value ** 2).sum(axis=[0, 2, 3])
+                self.stats[f'{key}_sum'] += (value / 255.).sum(axis=(0, 1, 3, 4))
+                self.stats[f'{key}_sum2'] += ((value / 255.) ** 2).sum(axis=(0, 1, 3, 4))
                 self.stats[f'{key}_cnt'] += (value.shape[0] * value.shape[2] * value.shape[3])
             else:
                 self.stats[f'{key}_sum'] += value.sum(axis=0)
                 self.stats[f'{key}_sum2'] += (value ** 2).sum(axis=0)
                 self.stats[f'{key}_cnt'] += value.shape[0]
 
-    def compute_stats(self):  # optional
+    def compute_stats(self, save_stats=False):  # optional
         sizes = [info['size'] for info in self.episodes_info]
         total_ts = sum(sizes)
-        print(f'demo episodes number: {len(self.episodes_info)};'
-              f'total ts number: {total_ts}'
-              f'avg ts in episode: {np.mean(sizes):.2f}'
-              f'min|median|max: {np.min(sizes)}|{np.median(sizes)}|{np.max(sizes)}')
+        print(f'demo episodes number: {len(self.episodes_info)}; '
+              f'total ts number: {total_ts}; '
+              f'avg ts in episode: {np.mean(sizes):.2f}; '
+              f'min|median|max: {np.min(sizes)}|{np.median(sizes)}|{np.max(sizes)}; ')
 
         for key in ('cameras', 'qpos', 'actions'):
             total_mean = self.stats[f'{key}_sum'] / self.stats[f'{key}_cnt']
@@ -199,5 +202,13 @@ class DemoDataset(IterableDataset):
             total_std = np.sqrt(total_var)
             print(key, 'mean:', np.round(total_mean, 3), 'std:', np.round(total_std))
 
-            self.normalization_coef[f'{key}_mean'] = total_mean
-            self.normalization_coef[f'{key}_std'] = total_std
+            self.normalization_coefs[f'{key}_mean'] = total_mean
+            self.normalization_coefs[f'{key}_std'] = total_std
+
+        if save_stats:
+            with open(os.path.join(self.dataset_path, 'stats.json'), 'w+') as stats_file:
+                json.dump(
+                    {key: list(value) for key, value in self.normalization_coefs.items()},
+                    stats_file,
+                    indent=4,
+                )

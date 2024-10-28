@@ -1,11 +1,14 @@
 defaults:
   - _self_
 
+action_dim: 0  # ??
+observation_dim: 0 # ??
+
 model:
   kl_weight: 10
-  num_actions: 16
-  action_dim: 0  # redefine
-  observation_dim: 0  # redefine
+  num_actions: 16  # how many actions to predict, 16 in BiGym paper
+  action_dim: ${action_dim}
+  observation_dim: ${observation_dim}
   latent_dim: 32
 
   backbone:
@@ -35,17 +38,58 @@ optimizer:
     weight_decay: 1e-4
 
 data:
-    demos_cnt: 5
-    train_ratio: 0.15
+    dir_path: 'data'
+    demos_cnt: 60
+    train_ratio: 0.85
     batch_size: 64
     num_workers: 4
-
-    actions_num: 16  # how many actions to predict, 16 in BiGym paper
+    actions_num: ${model.num_actions}
 
 training:
   seed: 0
-
-  train_steps: None
-  ckpt_dir: 'ckpts'
+  num_epochs: 50
+  train_steps: None  # redefine inside
+  val_steps: None  # redefine inside
   save_ckpt_frequency: 100
   log_interval: 1
+  ckpt_dir: 'ckpts'
+
+evaluation:
+  seed: 0
+  ckpt_name: None
+  temporal_agg: false
+  max_timesteps: 2000  # episode length
+  num_rollouts: 50
+  stats_file_path: ${data.dir_path}/stats.json
+
+env:
+  _target_: bigym.envs.reach_target.ReachTarget
+  action_mode:
+    _target_: bigym.action_modes.JointPositionActionMode
+    absolute: true
+    floating_base: true
+  observation_config:
+    _target_: bigym.utils.observation_config.ObservationConfig
+    cameras:
+      - 
+        _target_: bigym.utils.observation_config.CameraConfig
+        name: 'head'
+        rgb: true
+        depth: false
+        resolution: [84, 84]
+      - 
+        _target_: bigym.utils.observation_config.CameraConfig
+        name: 'right_wrist'
+        rgb: true
+        depth: false
+        resolution: [84, 84]
+      - 
+        _target_: bigym.utils.observation_config.CameraConfig
+        name: 'left_wrist'
+        rgb: true
+        depth: false
+        resolution: [84, 84]
+    proprioception: true
+  render_mode: 'rgb_array'
+  control_frequency: 50  # as in ACT paper
+  start_seed: 0

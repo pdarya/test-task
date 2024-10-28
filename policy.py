@@ -1,4 +1,5 @@
 import hydra
+import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import torchvision.transforms as transforms
@@ -31,9 +32,9 @@ class ACTPolicy(nn.Module):
         self.model.cuda()
 
         param_dicts = [
-            {"params": [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]},
+            {"params": [p for n, p in self.model.named_parameters() if "backbone" not in n and p.requires_grad]},
             {
-                "params": [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad],
+                "params": [p for n, p in self.model.named_parameters() if "backbone" in n and p.requires_grad],
                 "lr": cfg.optimizer.lr_backbone,
             },
         ]
