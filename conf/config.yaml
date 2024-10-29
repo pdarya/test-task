@@ -3,7 +3,7 @@ defaults:
 
 action_dim: 15
 observation_dim: 63
-base_dir: exp1
+base_dir: exp0
 
 model:
   kl_weight: 10
@@ -43,6 +43,7 @@ data:
     batch_size: 64
     num_workers: 4
     actions_num: ${model.num_actions}
+    full_demo: false
 
 training:
   seed: 0

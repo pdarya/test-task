@@ -61,12 +61,20 @@ def load_data(cfg: DictConfig):
     val_indices = shuffled_indices[int(cfg.train_ratio * len(demos)):]
     print(f'train episodes #{len(train_indices)}, val episodes #{len(val_indices)}')
 
-    train_dataset = DemoDataset(dataset_path=os.path.join(cfg.data_dir, 'train'), actions_num=cfg.actions_num)
+    train_dataset = DemoDataset(
+        dataset_path=os.path.join(cfg.data_dir, 'train'),
+        actions_num=cfg.actions_num,
+        full_demo=cfg.full_demo,
+    )
     for idx in train_indices:
         train_dataset.add_episode(demos[idx])
     train_dataset.compute_stats(save_stats=True)
 
-    val_dataset = DemoDataset(dataset_path=os.path.join(cfg.data_dir, 'val'), actions_num=cfg.actions_num)
+    val_dataset = DemoDataset(
+        dataset_path=os.path.join(cfg.data_dir, 'val'),
+        actions_num=cfg.actions_num,
+        full_demo=cfg.full_demo,
+    )
     for idx in val_indices:
         val_dataset.add_episode(demos[idx])
     val_dataset.compute_stats(save_stats=False)

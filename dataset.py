@@ -26,9 +26,11 @@ class DemoDataset(IterableDataset):
         self,
         dataset_path: str = 'data',
         max_episodes_buffer_size: int = 10,
-        update_buffer_probability: float = 0.2,
+        update_buffer_probability: float = 0.3,
         actions_num: int = 16,
+        full_demo: bool = False,
     ):
+        self.full_demo = full_demo
         # data storage
         self.current_episode = defaultdict(list)  # dict of lists with observations/actions
         self.episodes_info = []  # stored episodes TODO check for different workers
@@ -60,6 +62,7 @@ class DemoDataset(IterableDataset):
         truncated: bool,
         episode_id: str = '',
         env_name: str = '',
+        last: bool = False,
     ):
         self.current_episode['actions'].append(action)
 
@@ -75,10 +78,10 @@ class DemoDataset(IterableDataset):
             images.append(observation[key])
         self.current_episode['cameras'].append(np.array(images, dtype=images[0].dtype))
 
-        if terminal or truncated:  # TODO check condition
+        if last:  # TODO check condition
             for key, value in self.current_episode.items():
                 self.current_episode[key] = np.array(value, dtype=value[0].dtype)
-    
+
             self.track_stats()
 
             file_path = os.path.join(self.dataset_path, f'{len(self.episodes_info)}_{env_name}_{episode_id}.npz')
@@ -97,6 +100,10 @@ class DemoDataset(IterableDataset):
         self.current_episode = defaultdict(list)
         # print(f'adding episode with length {len(demo.timesteps)}')
         for idx, ts in enumerate(demo.timesteps):
+            if self.full_demo:
+                last = (idx == len(demo.timesteps - 1))
+            else:
+                last = ts.termination or ts.truncation
             self.add(
                 observation=ts.observation,
                 action=ts.executed_action,
@@ -105,9 +112,9 @@ class DemoDataset(IterableDataset):
                 truncated=ts.truncation,
                 episode_id=demo.uuid,
                 env_name=demo.metadata.env_name,
+                last=last,
             )
-            if ts.termination or ts.truncation:
-                # print(f'termination happened at {idx}th ts')
+            if last:
                 return
 
     def update_stored_episodes(self):
@@ -150,7 +157,6 @@ class DemoDataset(IterableDataset):
         episode_idx = np.random.choice(list(self.episodes_buffer.keys()))  # select episode
         episode_size = self.episodes_info[episode_idx]['size']
         ts_idx = np.random.randint(0, episode_size - 1)  # select ts
-        # print('sampled:', episode_idx, ts_idx)
 
         # prepare sample
         sample = {}
