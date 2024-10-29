@@ -1,147 +1,158 @@
 import json
 import os
+from tqdm import tqdm
 
+import cv2
 import hydra
 import numpy as np
 import torch
 
+from dataset import DemoDataset
 from policy import ACTPolicy
 
 
-def main(cfg, ckpt_name, save_episode=True):
+def get_model_input(observation, normalize_qpos_fn=None):
+    # qpos
+    proprio_observations = []
+    for key in DemoDataset.OBSERVATION_PROPRIO_KEYS:
+        proprio_observations.append(observation[key])
+    qpos = np.concatenate(proprio_observations).astype(np.float32)
+    if normalize_qpos_fn:
+        qpos = normalize_qpos_fn(qpos)
+    qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
+
+    # camera images
+    images = []
+    for key in DemoDataset.OBSERVATION_CAM_KEYS:
+        images.append(observation[key])
+    cameras = np.array(images).astype(np.float32) / 255.
+    cameras = torch.from_numpy(cameras).float().cuda().unsqueeze(0)
+
+    return qpos, cameras
+
+
+def eval(cfg):
     torch.manual_seed(cfg.evaluation.seed)
     np.random.seed(cfg.evaluation.seed)
 
     # load stats
     with open(cfg.evaluation.stats_file_path, 'r') as f:
         stats = json.load(f)
-    pre_process = lambda s_qpos: (s_qpos - stats['qpos_mean']) / stats['qpos_std']
-    post_process = lambda a: a * stats['action_std'] + stats['action_mean']
+    pre_process_qpos = lambda s_qpos: (s_qpos - stats['qpos_mean']) / stats['qpos_std']
+    post_process_action = lambda a: a * stats['actions_std'] + stats['actions_mean']
 
     # load policy
-    ckpt_path = os.path.join(cfg.ckpt_dir, cfg.evaluation.ckpt_name)
-    policy = ACTPolicy(cfg, mean=None, std=None)
-    loading_status = policy.load_state_dict(torch.load(ckpt_path))
+    policy = ACTPolicy(cfg, mean=stats['cameras_mean'], std=stats['cameras_std'])
+    loading_status = policy.load_state_dict(torch.load(cfg.evaluation.ckpt_path))
     print(loading_status)
     policy.cuda()
     policy.eval()
-    print(f'loaded: {cfg.ckpt_path}')
+    print(f'loaded model from: {cfg.evaluation.ckpt_path}')
 
     # make environment
     env = hydra.utils.instantiate(cfg.env)
-    env_max_reward = 1
 
     query_frequency = cfg.model.num_actions
     if cfg.evaluation.temporal_agg:
         query_frequency = 1
-        num_queries = cfg.model.num_actions
 
     max_timesteps = int(cfg.evaluation.max_timesteps)  # may increase for real-world tasks
 
-    episode_returns = []
-    highest_rewards = []
+    episode_returs = []
+    # evaluation loop
     for rollout_id in range(cfg.evaluation.num_rollouts):
-        rollout_id += 0
+        obs, _ = env.reset(seed=rollout_id)
 
-        ts = env.reset()
-
-        ### evaluation loop
         if cfg.evaluation.temporal_agg:
-            all_time_actions = torch.zeros([max_timesteps, max_timesteps + num_queries, state_dim]).cuda()
+            all_time_actions = torch.zeros([max_timesteps, max_timesteps + cfg.model.num_actions, cfg.action_dim]).cuda()
+        image_list, qpos_list, applied_actions, rewards = [], [], [], []  # for visualization
 
-        qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
-        image_list = [] # for visualization
-        qpos_list = []
-        target_qpos_list = []
-        rewards = []
         with torch.inference_mode():
-            for t in range(max_timesteps):
-                ### update onscreen render and wait for DT
-                if onscreen_render:
-                    image = env._physics.render(height=480, width=640, camera_id=onscreen_cam)
-                    plt_img.set_data(image)
-                    plt.pause(DT)
+            for t in tqdm(range(max_timesteps)):
+                # for visualization
+                image_list.append({camera_name: obs[camera_name] for camera_name in ['rgb_head', 'rgb_right_wrist', 'rgb_left_wrist']})
 
-                ### process previous timestep to get qpos and image_list
-                obs = ts.observation
-                if 'images' in obs:
-                    image_list.append(obs['images'])
+                # prepare model input
+                qpos, camera_images = get_model_input(obs, pre_process_qpos)
+
+                # query policy
+                if t % query_frequency == 0:
+                    all_actions = policy(qpos, camera_images)
+                if cfg.evaluation.temporal_agg:
+                    all_time_actions[[t], t:t + cfg.num_actions] = all_actions
+                    actions_for_curr_step = all_time_actions[:, t]
+                    actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                    actions_for_curr_step = actions_for_curr_step[actions_populated]
+                    exp_weights = np.exp(-cfg.evaluation.k * np.arange(len(actions_for_curr_step)))
+                    exp_weights = exp_weights / exp_weights.sum()
+                    exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+                    raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)  # to apply in env
                 else:
-                    image_list.append({'main': obs['image']})
-                qpos_numpy = np.array(obs['qpos'])
-                qpos = pre_process(qpos_numpy)
-                qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
-                qpos_history[:, t] = qpos
-                curr_image = get_image(ts, camera_names)
+                    raw_action = all_actions[:, t % query_frequency]
 
-                ### query policy
-                if config['policy_class'] == "ACT":
-                    if t % query_frequency == 0:
-                        all_actions = policy(qpos, curr_image)
-                    if temporal_agg:
-                        all_time_actions[[t], t:t+num_queries] = all_actions
-                        actions_for_curr_step = all_time_actions[:, t]
-                        actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                        actions_for_curr_step = actions_for_curr_step[actions_populated]
-                        k = 0.01
-                        exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                        exp_weights = exp_weights / exp_weights.sum()
-                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-                        raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
-                    else:
-                        raw_action = all_actions[:, t % query_frequency]
-                elif config['policy_class'] == "CNNMLP":
-                    raw_action = policy(qpos, curr_image)
-                else:
-                    raise NotImplementedError
-
-                ### post-process actions
+                # post-process actions
                 raw_action = raw_action.squeeze(0).cpu().numpy()
-                action = post_process(raw_action)
-                target_qpos = action
+                action_to_apply = post_process_action(raw_action)  # denormalize
+                action_to_apply = np.clip(action_to_apply, env.action_space.low, env.action_space.high)
 
-                ### step the environment
-                ts = env.step(target_qpos)
+                # step the environment
+                obs, reward, terminated, truncated, info = env.step(action_to_apply)
 
-                ### for visualization
-                qpos_list.append(qpos_numpy)
-                target_qpos_list.append(target_qpos)
-                rewards.append(ts.reward)
+                # for visualization
+                qpos_list.append(qpos.cpu().numpy())
+                applied_actions.append(action_to_apply)
+                rewards.append(reward)
 
-            plt.close()
-        if real_robot:
-            move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)  # open
-            pass
+                if terminated:
+                    image_list.append({camera_name: obs[camera_name] for camera_name in ['rgb_head', 'rgb_right_wrist', 'rgb_left_wrist']})
+                    break
 
-        rewards = np.array(rewards)
-        episode_return = np.sum(rewards[rewards!=None])
-        episode_returns.append(episode_return)
-        episode_highest_reward = np.max(rewards)
-        highest_rewards.append(episode_highest_reward)
-        print(f'Rollout {rollout_id}\n{episode_return=}, {episode_highest_reward=}, {env_max_reward=}, Success: {episode_highest_reward==env_max_reward}')
+        print(f'rollout #{rollout_id}, ts: {t}, success={np.sum(rewards) > 0}')
+        episode_returs.append(np.sum(rewards))
+        if cfg.evaluation.save_video and rollout_id < 5:
+            save_videos(image_list, video_path=os.path.join(cfg.evaluation.videos_dir, f'rollout_{rollout_id}.mp4'))
 
-        if save_episode:
-            save_videos(image_list, DT, video_path=os.path.join(ckpt_dir, f'video{rollout_id}.mp4'))
+    success_rate = np.mean(episode_returs)
+    print(f'evaluation finished:\n rollouts number: {cfg.evaluation.num_rollouts}, success rate: {success_rate}')
 
-    success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
-    avg_return = np.mean(episode_returns)
-    summary_str = f'\nSuccess rate: {success_rate}\nAverage return: {avg_return}\n\n'
-    for r in range(env_max_reward+1):
-        more_or_equal_r = (np.array(highest_rewards) >= r).sum()
-        more_or_equal_r_rate = more_or_equal_r / num_rollouts
-        summary_str += f'Reward >= {r}: {more_or_equal_r}/{num_rollouts} = {more_or_equal_r_rate*100}%\n'
 
-    print(summary_str)
+def save_videos(video, fps=50, video_path=None):
+    if isinstance(video, list):
+        cam_names = list(video[0].keys())
+        print('in video:', len(video), video[0][cam_names[0]].shape)
+        c, h, w = video[0][cam_names[0]].shape
+        w = w * len(cam_names)
+        out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+        for ts, image_dict in enumerate(video):
+            images = []
+            for cam_name in cam_names:
+                image = image_dict[cam_name]
+                image = np.transpose(image[[2, 1, 0], :, :], (1, 2, 0))  # swap B and R channel
+                images.append(image)
+            images = np.concatenate(images, axis=1)
+            out.write(images)
+        out.release()
+        print(f'saved video to: {video_path}')
+    elif isinstance(video, dict):
+        cam_names = list(video.keys())
+        all_cam_videos = []
+        for cam_name in cam_names:
+            all_cam_videos.append(video[cam_name])
+        all_cam_videos = np.concatenate(all_cam_videos, axis=2)  # width dimension
 
-    # save success rate to txt
-    result_file_name = 'result_' + ckpt_name.split('.')[0] + '.txt'
-    with open(os.path.join(ckpt_dir, result_file_name), 'w') as f:
-        f.write(summary_str)
-        f.write(repr(episode_returns))
-        f.write('\n\n')
-        f.write(repr(highest_rewards))
+        n_frames, h, w, _ = all_cam_videos.shape
+        out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+        for t in range(n_frames):
+            image = all_cam_videos[t]
+            image = image[:, :, [2, 1, 0]]  # swap B and R channel
+            out.write(image)
+        out.release()
+        print(f'saved video to: {video_path}')
 
-    return success_rate, avg_return
+
+@hydra.main(version_base=None, config_path='conf', config_name='config')
+def main(cfg):
+    eval(cfg)
 
 
 if __name__ == '__main__':

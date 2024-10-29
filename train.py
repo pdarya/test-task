@@ -61,12 +61,12 @@ def load_data(cfg: DictConfig):
     val_indices = shuffled_indices[int(cfg.train_ratio * len(demos)):]
     print(f'train episodes #{len(train_indices)}, val episodes #{len(val_indices)}')
 
-    train_dataset = DemoDataset(dataset_path='data/train', actions_num=cfg.actions_num)
+    train_dataset = DemoDataset(dataset_path=os.path.join(cfg.data_dir, 'train'), actions_num=cfg.actions_num)
     for idx in train_indices:
         train_dataset.add_episode(demos[idx])
     train_dataset.compute_stats(save_stats=True)
 
-    val_dataset = DemoDataset(dataset_path='data/val', actions_num=cfg.actions_num)
+    val_dataset = DemoDataset(dataset_path=os.path.join(cfg.data_dir, 'val'), actions_num=cfg.actions_num)
     for idx in val_indices:
         val_dataset.add_episode(demos[idx])
     val_dataset.compute_stats(save_stats=False)
@@ -98,7 +98,7 @@ def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig):
                 forward_dict = policy(qpos, cameras, actions, mask)  # l1, kl, loss
                 epoch_dicts.append(utils.detach_dict(forward_dict))
                 if batch_idx % cfg.log_interval == 0:
-                    wandb.log(utils.add_prefix(forward_dict, 'batch/val/'))
+                    wandb.log(utils.add_prefix(forward_dict, 'batch/val/', {'batch': epoch * cfg.val_steps + batch_idx}))
             epoch_summary = utils.compute_dict_mean(epoch_dicts)
             validation_history.append(epoch_summary)
 
@@ -113,9 +113,9 @@ def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig):
                     json.dump({'val_loss': float(epoch_val_loss), 'epoch': epoch}, f)
 
         # log validation metrics
-        wandb.log(utils.add_prefix(epoch_summary, 'epoch/val/'))
+        wandb.log(utils.add_prefix(epoch_summary, 'epoch/val/', {'epoch': epoch}))
         loss_summary_string = ' '.join([f'{loss_type}: {loss_value:.5f}' for loss_type, loss_value in epoch_summary.items()])
-        print('validation:', loss_summary_string)
+        print(datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'validation:', loss_summary_string)
 
         # training
         train_history = []
@@ -134,14 +134,14 @@ def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig):
             stats = utils.detach_dict(forward_dict)
             train_history.append(stats)
             if batch_idx % cfg.log_interval == 0:
-                wandb.log(utils.add_prefix(stats, 'batch/train/'))
+                wandb.log(utils.add_prefix(stats, 'batch/train/', {'batch': epoch * cfg.train_steps + batch_idx}))
 
         # log training metrics by epoch
         epoch_summary = utils.compute_dict_mean(train_history)
         epoch_summary['lr'] = policy.optimizer.param_groups[-1]['lr']
-        wandb.log(utils.add_prefix(epoch_summary, 'epoch/train/'))
+        wandb.log(utils.add_prefix(epoch_summary, 'epoch/train/', {'epoch': epoch}))
         loss_summary_string = ' '.join([f'{loss_type}: {loss_value:.5f}' for loss_type, loss_value in epoch_summary.items()])
-        print('training:', loss_summary_string)
+        print(datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'training:', loss_summary_string)
 
         if epoch % cfg.save_ckpt_frequency == 0:
             ckpt_path = os.path.join(cfg.ckpt_dir, f'policy_epoch_{epoch}_seed_{cfg.seed}.ckpt')
@@ -159,6 +159,13 @@ def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig):
 
 @hydra.main(version_base=None, config_path='conf', config_name='config')
 def main(cfg: DictConfig):
+    if not os.path.exists(cfg.base_dir):
+        os.mkdir(cfg.base_dir)
+    for dir_name in ('ckpts', 'data', 'videos'):
+        path = os.path.join(cfg.base_dir, dir_name)
+        if not os.path.exists(cfg.base_dir):
+            os.mkdir(path)
+
     torch.manual_seed(cfg.training.seed)
     np.random.seed(cfg.training.seed)
 

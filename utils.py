@@ -16,8 +16,10 @@ def detach_dict(d: dict):
     return new_d
 
 
-def add_prefix(d: dict, prefix: str):
+def add_prefix(d: dict, prefix: str, additional_dict=None):
     new_d = dict()
     for k, v in d.items():
         new_d[f'{prefix}{k}'] = v
+    if additional_dict is not None:
+        new_d.update(additional_dict)
     return new_d
