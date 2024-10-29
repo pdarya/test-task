@@ -38,6 +38,7 @@ class DETRVAE(nn.Module):
         super().__init__()
         self.transformer = transformer
         self.encoder = encoder
+        self.num_actions = num_actions
 
         hidden_dim = transformer.d_model
         self.action_head = nn.Linear(hidden_dim, action_dim)
@@ -121,7 +122,6 @@ class DETRVAE(nn.Module):
             # proprioception features
             proprio_input = self.input_proj_robot_state(qpos)
             # fold camera dimension into width dimension
-            print('all_cam_features[0].shape =', all_cam_features[0].shape)
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
             hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight)[0]

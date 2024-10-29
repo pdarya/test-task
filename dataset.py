@@ -1,6 +1,7 @@
 from collections import defaultdict, OrderedDict
 import io
 import json
+import shutil
 import os
 
 import numpy as np
@@ -32,6 +33,8 @@ class DemoDataset(IterableDataset):
         self.current_episode = defaultdict(list)  # dict of lists with observations/actions
         self.episodes_info = []  # stored episodes TODO check for different workers
         self.dataset_path = dataset_path
+        if os.path.exists(self.dataset_path):  # TODO delete
+            shutil.rmtree(self.dataset_path)
         if not os.path.exists(self.dataset_path):
             os.makedirs(self.dataset_path)
 
@@ -92,7 +95,8 @@ class DemoDataset(IterableDataset):
 
     def add_episode(self, demo):
         self.current_episode = defaultdict(list)
-        for ts in demo.timesteps:
+        # print(f'adding episode with length {len(demo.timesteps)}')
+        for idx, ts in enumerate(demo.timesteps):
             self.add(
                 observation=ts.observation,
                 action=ts.executed_action,
@@ -103,6 +107,7 @@ class DemoDataset(IterableDataset):
                 env_name=demo.metadata.env_name,
             )
             if ts.termination or ts.truncation:
+                # print(f'termination happened at {idx}th ts')
                 return
 
     def update_stored_episodes(self):
@@ -110,7 +115,7 @@ class DemoDataset(IterableDataset):
         num_workers = int(worker_info.num_workers) if worker_info is not None else 1
         worker_id = worker_info.id if worker_info is not None else 0
 
-        assert num_workers <= len(self.episodes_buffer), 'need to reduce dataloader workers number'
+        assert num_workers <= len(self.episodes_info), f'need to reduce dataloader workers number {num_workers} > {len(self.episodes_info)}'
 
         # do not update filled buffer with some probability
         if len(self.episodes_buffer) == self.max_episodes_buffer_size and np.random.rand() > self.update_buffer_probability:
@@ -145,20 +150,20 @@ class DemoDataset(IterableDataset):
         episode_idx = np.random.choice(list(self.episodes_buffer.keys()))  # select episode
         episode_size = self.episodes_info[episode_idx]['size']
         ts_idx = np.random.randint(0, episode_size - 1)  # select ts
-        print('sampled:', episode_idx, ts_idx)
+        # print('sampled:', episode_idx, ts_idx)
 
         # prepare sample
         sample = {}
         # add observation
-        sample['qpos'] = (self.episodes_buffer[episode_idx]['qpos'][ts_idx]
-                          - self.normalization_coefs['qpos_mean']) / self.normalization_coefs['qpos_std']
-        sample['cameras'] = self.episodes_buffer[episode_idx]['cameras'][ts_idx] / 255.
+        sample['qpos'] = ((self.episodes_buffer[episode_idx]['qpos'][ts_idx]
+                          - self.normalization_coefs['qpos_mean']) / self.normalization_coefs['qpos_std']).astype(np.float32)
+        sample['cameras'] = (self.episodes_buffer[episode_idx]['cameras'][ts_idx] / 255.).astype(np.float32)
 
         # add actions (target)
         actions_end_idx = min(ts_idx + self.actions_num, episode_size)
         actions_idxs = list(range(ts_idx, actions_end_idx))
-        actions_seq = (self.episodes_buffer[episode_idx]['actions'][actions_idxs] -
-                       self.normalization_coefs['actions_mean']) / self.normalization_coefs['actions_std']
+        actions_seq = ((self.episodes_buffer[episode_idx]['actions'][actions_idxs] -
+                       self.normalization_coefs['actions_mean']) / self.normalization_coefs['actions_std']).astype(np.float32)
         if len(actions_seq) < self.actions_num:
             actions_seq = np.concatenate(
                 [actions_seq, np.zeros((self.actions_num - len(actions_seq), *actions_seq.shape[1:]), dtype=np.float32)],  # TODO
@@ -176,13 +181,12 @@ class DemoDataset(IterableDataset):
     def track_stats(self):
         """ after current episode is loaded """
         for key, value in self.current_episode.items():
-            print(key, value.shape)
             if key == 'mask':
                 continue
             if key == 'cameras':
                 self.stats[f'{key}_sum'] += (value / 255.).sum(axis=(0, 1, 3, 4))
                 self.stats[f'{key}_sum2'] += ((value / 255.) ** 2).sum(axis=(0, 1, 3, 4))
-                self.stats[f'{key}_cnt'] += (value.shape[0] * value.shape[2] * value.shape[3])
+                self.stats[f'{key}_cnt'] += (value.shape[0] * value.shape[1] * value.shape[3] * value.shape[4])
             else:
                 self.stats[f'{key}_sum'] += value.sum(axis=0)
                 self.stats[f'{key}_sum2'] += (value ** 2).sum(axis=0)
@@ -191,16 +195,18 @@ class DemoDataset(IterableDataset):
     def compute_stats(self, save_stats=False):  # optional
         sizes = [info['size'] for info in self.episodes_info]
         total_ts = sum(sizes)
-        print(f'demo episodes number: {len(self.episodes_info)}; '
+        print(f'demo episodes number: {len(self.episodes_info)};'
               f'total ts number: {total_ts}; '
-              f'avg ts in episode: {np.mean(sizes):.2f}; '
-              f'min|median|max: {np.min(sizes)}|{np.median(sizes)}|{np.max(sizes)}; ')
+              f'avg ts in episode: {np.mean(sizes):.3f}; '
+              f'min|median|max: {np.min(sizes)}|{np.median(sizes)}|{np.max(sizes)};')
 
         for key in ('cameras', 'qpos', 'actions'):
             total_mean = self.stats[f'{key}_sum'] / self.stats[f'{key}_cnt']
             total_var = (self.stats[f'{key}_sum2'] / self.stats[f'{key}_cnt']) - (total_mean ** 2)
             total_std = np.sqrt(total_var)
-            print(key, 'mean:', np.round(total_mean, 3), 'std:', np.round(total_std))
+            total_std[total_std == 0] = 1.
+
+            print(key, 'mean:', np.round(total_mean, 3), 'std:', np.round(total_std, 3))
 
             self.normalization_coefs[f'{key}_mean'] = total_mean
             self.normalization_coefs[f'{key}_std'] = total_std

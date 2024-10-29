@@ -31,14 +31,16 @@ class ACTPolicy(nn.Module):
         self.model = self.build_model(cfg.model)
         self.model.cuda()
 
+        print(self.model)
         param_dicts = [
             {"params": [p for n, p in self.model.named_parameters() if "backbone" not in n and p.requires_grad]},
             {
                 "params": [p for n, p in self.model.named_parameters() if "backbone" in n and p.requires_grad],
-                "lr": cfg.optimizer.lr_backbone,
+                "lr": 1e-5,
             },
         ]
-        self.optimizer = hydra.utils.instantiate(cfg.optimizer.main, params=param_dicts)
+
+        self.optimizer = torch.optim.AdamW(lr=cfg.optimizer.lr, weight_decay=cfg.optimizer.weight_decay, params=param_dicts)
         self.kl_weight = cfg.model.kl_weight
         self.normalize = transforms.Normalize(mean=mean, std=std)
 
@@ -63,14 +65,15 @@ class ACTPolicy(nn.Module):
         return model
 
     def __call__(self, qpos, image, actions=None, is_pad=None):
+        # print('input data shape:', qpos.shape, qpos.dtype, image.shape, image.dtype, actions.shape, actions.dtype, is_pad.shape, is_pad.dtype)
         image = self.normalize(image)
-        print('image after normalization:', torch.min(image), torch.max(image), image)
+        # print('image after normalization:', torch.min(image), torch.max(image), image)
 
         if actions is not None:  # training time
-            actions = actions[:, :self.model.num_queries]
-            is_pad = is_pad[:, :self.model.num_queries]
+            actions = actions[:, :self.model.num_actions]
+            is_pad = is_pad[:, :self.model.num_actions]
 
-            a_hat, is_pad_hat, (mu, logvar) = self.model(qpos, image, actions, is_pad)
+            a_hat, is_pad_hat, (mu, logvar) = self.model(qpos, image, None, actions, is_pad)
             total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
             loss_dict = dict()
             all_l1 = F.l1_loss(actions, a_hat, reduction='none')

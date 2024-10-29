@@ -1,6 +1,7 @@
 from copy import deepcopy
-import itertools
 from datetime import datetime
+import itertools
+import json
 import os
 from tqdm import tqdm
 
@@ -60,18 +61,18 @@ def load_data(cfg: DictConfig):
     val_indices = shuffled_indices[int(cfg.train_ratio * len(demos)):]
     print(f'train episodes #{len(train_indices)}, val episodes #{len(val_indices)}')
 
-    train_dataset = DemoDataset(actions_num=cfg.actions_num)
+    train_dataset = DemoDataset(dataset_path='data/train', actions_num=cfg.actions_num)
     for idx in train_indices:
         train_dataset.add_episode(demos[idx])
     train_dataset.compute_stats(save_stats=True)
 
-    val_dataset = DemoDataset(actions_num=cfg.actions_num)
+    val_dataset = DemoDataset(dataset_path='data/val', actions_num=cfg.actions_num)
     for idx in val_indices:
         val_dataset.add_episode(demos[idx])
     val_dataset.compute_stats(save_stats=False)
 
     train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, num_workers=cfg.num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=cfg.batch_size, num_workers=cfg.num_workers, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=cfg.batch_size, num_workers=2, pin_memory=True)
 
     return train_loader, val_loader, {
         'coefs': train_dataset.normalization_coefs,
@@ -81,10 +82,11 @@ def load_data(cfg: DictConfig):
 
 
 def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig):
+    print(f'will run {cfg.num_epochs} epochs, {cfg.train_steps} train steps and {cfg.val_steps} validation steps per epoch')
     validation_history = []
     min_val_loss = np.inf
     best_ckpt_info = None
-    for epoch in tqdm(range(cfg.num_epochs)):
+    for epoch in range(cfg.num_epochs):
         print(f'epoch #{epoch}')
         # validation
         with torch.inference_mode():
@@ -94,7 +96,7 @@ def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig):
                 cameras, qpos, actions, mask = data['cameras'], data['qpos'], data['actions'], data['mask']
                 cameras, qpos, actions, mask = cameras.cuda(), qpos.cuda(), actions.cuda(), mask.cuda()
                 forward_dict = policy(qpos, cameras, actions, mask)  # l1, kl, loss
-                epoch_dicts.append(forward_dict)
+                epoch_dicts.append(utils.detach_dict(forward_dict))
                 if batch_idx % cfg.log_interval == 0:
                     wandb.log(utils.add_prefix(forward_dict, 'batch/val/'))
             epoch_summary = utils.compute_dict_mean(epoch_dicts)
@@ -105,12 +107,14 @@ def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig):
             if epoch_val_loss < min_val_loss:
                 min_val_loss = epoch_val_loss
                 best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
-                ckpt_path = os.path.join(cfg.ckpt_dir, f'policy_epoch_{best_epoch}_seed_{cfg.seed}_best.ckpt')
-                torch.save(best_state_dict, ckpt_path)
+                ckpt_path = os.path.join(cfg.ckpt_dir, f'best_policy.ckpt')
+                torch.save(policy.state_dict(), ckpt_path)
+                with open(os.path.join(cfg.ckpt_dir, f'best_policy_meta.json'), 'w+') as f:
+                    json.dump({'val_loss': float(epoch_val_loss), 'epoch': epoch}, f)
 
         # log validation metrics
         wandb.log(utils.add_prefix(epoch_summary, 'epoch/val/'))
-        loss_summary_string = ' '.join([f'{loss_type}: {loss_value.item():.5f}' for loss_type, loss_value in epoch_summary.items()])
+        loss_summary_string = ' '.join([f'{loss_type}: {loss_value:.5f}' for loss_type, loss_value in epoch_summary.items()])
         print('validation:', loss_summary_string)
 
         # training
@@ -136,7 +140,7 @@ def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig):
         epoch_summary = utils.compute_dict_mean(train_history)
         epoch_summary['lr'] = policy.optimizer.param_groups[-1]['lr']
         wandb.log(utils.add_prefix(epoch_summary, 'epoch/train/'))
-        loss_summary_string = ' '.join([f'{loss_type}: {loss_value.item():.5f}' for loss_type, loss_value in epoch_summary.items()])
+        loss_summary_string = ' '.join([f'{loss_type}: {loss_value:.5f}' for loss_type, loss_value in epoch_summary.items()])
         print('training:', loss_summary_string)
 
         if epoch % cfg.save_ckpt_frequency == 0:
@@ -160,14 +164,18 @@ def main(cfg: DictConfig):
 
     train_dataloader, val_dataloader, info = load_data(cfg.data)
     cfg.training.train_steps, cfg.training.val_steps = info['train_size'], info['val_size']
-    print(cfg)
-    return
-    # wandb.init(config=OmegaConf.to_object(cfg), project='bigym_act', name=f"run_{datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}")
-    policy = ACTPolicy(cfg.model, mean=info['coefs']['cameras_mean'], std=info['coefs']['cameras_std'])
-    # wandb.watch(policy)
+
+    wandb.init(
+        config=OmegaConf.to_object(cfg),
+        project='bigym_act',
+        name=f"run_{datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}",
+        # mode='disabled',
+    )
+    policy = ACTPolicy(cfg, mean=info['coefs']['cameras_mean'], std=info['coefs']['cameras_std'])
+    wandb.watch(policy)
 
     train(policy, train_dataloader, val_dataloader, cfg.training)
-    # wandb.finish()
+    wandb.finish()
 
 
 if __name__ == '__main__':

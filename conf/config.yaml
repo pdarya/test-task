@@ -1,8 +1,8 @@
 defaults:
   - _self_
 
-action_dim: 0  # ??
-observation_dim: 0 # ??
+action_dim: 15
+observation_dim: 63
 
 model:
   kl_weight: 10
@@ -10,6 +10,7 @@ model:
   action_dim: ${action_dim}
   observation_dim: ${observation_dim}
   latent_dim: 32
+  hidden_dim: 512
 
   backbone:
     type: 'resnet18'
@@ -18,40 +19,37 @@ model:
     dilation: false  # ??
     positional_encoding:
       type: 'sine'
-      hidden_dim: 256
+      hidden_dim: ${model.hidden_dim}
 
   transformer:
     enc_layers: 4
     dec_layers: 6
     dim_feedforward: 2048
-    hidden_dim: 256
+    hidden_dim: ${model.hidden_dim}
     dropout: 0.1
     nheads: 8
-    num_queries: 400
     pre_norm: false
 
 optimizer:
   lr_backbone: 1e-5
-  main:
-    _target_: torch.optim.AdamW
-    lr: 1e-4
-    weight_decay: 1e-4
+  lr: 5e-5
+  weight_decay: 1e-4
 
 data:
     dir_path: 'data'
     demos_cnt: 60
-    train_ratio: 0.85
+    train_ratio: 0.95
     batch_size: 64
     num_workers: 4
     actions_num: ${model.num_actions}
 
 training:
   seed: 0
-  num_epochs: 50
+  num_epochs: 500
   train_steps: None  # redefine inside
   val_steps: None  # redefine inside
-  save_ckpt_frequency: 100
-  log_interval: 1
+  save_ckpt_frequency: 10
+  log_interval: 5
   ckpt_dir: 'ckpts'
 
 evaluation:

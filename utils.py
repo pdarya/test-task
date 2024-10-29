@@ -19,5 +19,5 @@ def detach_dict(d: dict):
 def add_prefix(d: dict, prefix: str):
     new_d = dict()
     for k, v in d.items():
-        new_d[f'{prefix}{k}'] = v.detach()
+        new_d[f'{prefix}{k}'] = v
     return new_d
