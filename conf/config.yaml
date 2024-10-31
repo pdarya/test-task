@@ -53,11 +53,12 @@ training:
   save_ckpt_frequency: 10
   log_interval: 5
   ckpt_dir: ${base_dir}/ckpts
+  wandb_run_id: ''
 
 evaluation:
   seed: 0
-  ckpt_path: ${training.ckpt_dir}/best_policy.ckpt
-  temporal_agg: false
+  ckpt_path: ${training.ckpt_dir}/policy_epoch_60_seed_0.ckpt  # best_policy.ckpt
+  temporal_agg: true
   max_timesteps: 200  # episode length
   num_rollouts: 3
   stats_file_path: ${data.data_dir}/train/stats.json

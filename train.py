@@ -15,6 +15,7 @@ import wandb
 from bigym.action_modes import JointPositionActionMode, PelvisDof
 from bigym.bigym_env import CONTROL_FREQUENCY_MAX  # 500 Hz
 from bigym.envs.reach_target import ReachTarget
+from bigym.envs.manipulation import FlipCup
 from bigym.utils.observation_config import ObservationConfig, CameraConfig
 from demonstrations.demo_player import DemoPlayer
 from demonstrations.demo_store import DemoStore
@@ -27,7 +28,7 @@ from policy import ACTPolicy
 torch.backends.cudnn.benchmark = True
 
 
-def load_data(cfg: DictConfig):
+def load_data(cfg: DictConfig, env, resume: bool = False):
     env = ReachTarget(  # TODO from hydra config and check
         action_mode=JointPositionActionMode(
             absolute=True,
@@ -50,46 +51,46 @@ def load_data(cfg: DictConfig):
         start_seed=0,
     )
 
-    metadata = Metadata.from_env(env)
-    demo_store = DemoStore()
-    print(f'going to load #{cfg.demos_cnt} demos')
-    demos = demo_store.get_demos(metadata, amount=cfg.demos_cnt, frequency=50)
-    print(f'loaded demos #{len(demos)}')
+    datasets = {}
+    for dataset_type in ('train', 'val'):
+        datasets[dataset_type] = DemoDataset(
+            dataset_path=os.path.join(cfg.data_dir, dataset_type),
+            actions_num=cfg.actions_num,
+            full_demo=cfg.full_demo,
+            resume=True,  # TODO resume
+        )
 
-    shuffled_indices = np.random.permutation(len(demos))
-    train_indices = shuffled_indices[:int(cfg.train_ratio * len(demos))]
-    val_indices = shuffled_indices[int(cfg.train_ratio * len(demos)):]
-    print(f'train episodes #{len(train_indices)}, val episodes #{len(val_indices)}')
+    if False:  # not resume
+        metadata = Metadata.from_env(env)
+        demo_store = DemoStore()
+        print(f'going to load #{cfg.demos_cnt} demos')
+        demos = demo_store.get_demos(metadata, amount=cfg.demos_cnt, frequency=50)
+        print(f'loaded demos #{len(demos)}')
 
-    train_dataset = DemoDataset(
-        dataset_path=os.path.join(cfg.data_dir, 'train'),
-        actions_num=cfg.actions_num,
-        full_demo=cfg.full_demo,
-    )
-    for idx in train_indices:
-        train_dataset.add_episode(demos[idx])
-    train_dataset.compute_stats(save_stats=True)
+        shuffled_indices = np.random.permutation(len(demos))
+        train_indices = shuffled_indices[:int(cfg.train_ratio * len(demos))]
+        val_indices = shuffled_indices[int(cfg.train_ratio * len(demos)):]
+        print(f'train episodes #{len(train_indices)}, val episodes #{len(val_indices)}')
 
-    val_dataset = DemoDataset(
-        dataset_path=os.path.join(cfg.data_dir, 'val'),
-        actions_num=cfg.actions_num,
-        full_demo=cfg.full_demo,
-    )
-    for idx in val_indices:
-        val_dataset.add_episode(demos[idx])
-    val_dataset.compute_stats(save_stats=False)
+        for dataset_type, indices, save_stats in (
+            ('train', train_indices, True),
+            ('val', val_indices, False),
+        ):
+            for idx in indices:
+                datasets[dataset_type].add_episode(demos[idx])
+            datasets[dataset_type].compute_stats(save_stats=save_stats)
 
-    train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, num_workers=cfg.num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=cfg.batch_size, num_workers=2, pin_memory=True)
+    train_loader = DataLoader(datasets['train'], batch_size=cfg.batch_size, num_workers=cfg.num_workers, pin_memory=True)
+    val_loader = DataLoader(datasets['val'], batch_size=cfg.batch_size, num_workers=2, pin_memory=True)
 
     return train_loader, val_loader, {
-        'coefs': train_dataset.normalization_coefs,
-        'train_size': train_dataset.size(),
-        'val_size': val_dataset.size(),
+        'coefs': datasets['train'].normalization_coefs,
+        'train_size': datasets['train'].size(),
+        'val_size': datasets['val'].size(),
     }
 
 
-def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig):
+def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig, resume: bool = False):
     print(f'will run {cfg.num_epochs} epochs, {cfg.train_steps} train steps and {cfg.val_steps} validation steps per epoch')
     validation_history = []
     min_val_loss = np.inf
@@ -115,10 +116,8 @@ def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig):
             if epoch_val_loss < min_val_loss:
                 min_val_loss = epoch_val_loss
                 best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
-                ckpt_path = os.path.join(cfg.ckpt_dir, f'best_policy.ckpt')
-                torch.save(policy.state_dict(), ckpt_path)
-                with open(os.path.join(cfg.ckpt_dir, f'best_policy_meta.json'), 'w+') as f:
-                    json.dump({'val_loss': float(epoch_val_loss), 'epoch': epoch}, f)
+                utils.save_checkpoint(policy=policy, epoch=epoch, path=os.path.join(cfg.ckpt_dir, f'best.ckpt'))
+                print('new best model saved')
 
         # log validation metrics
         wandb.log(utils.add_prefix(epoch_summary, 'epoch/val/', {'epoch': epoch}))
@@ -152,12 +151,10 @@ def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig):
         print(datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'training:', loss_summary_string)
 
         if epoch % cfg.save_ckpt_frequency == 0:
-            ckpt_path = os.path.join(cfg.ckpt_dir, f'policy_epoch_{epoch}_seed_{cfg.seed}.ckpt')
-            torch.save(policy.state_dict(), ckpt_path)
+            utils.save_checkpoint(policy=policy, epoch=epoch, path=os.path.join(cfg.ckpt_dir, f'epoch_{epoch}_seed_{cfg.seed}.ckpt'))
 
-    # saving last ckpt
-    ckpt_path = os.path.join(cfg.ckpt_dir, f'policy_last.ckpt')
-    torch.save(policy.state_dict(), ckpt_path)
+        # saving last ckpt
+        utils.save_checkpoint(policy=policy, epoch=epoch, path=os.path.join(cfg.ckpt_dir, f'last.ckpt'))
 
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
     print(f'training finished: seed {cfg.seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}')
@@ -167,18 +164,16 @@ def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig):
 
 @hydra.main(version_base=None, config_path='conf', config_name='config')
 def main(cfg: DictConfig):
-    if not os.path.exists(cfg.base_dir):
-        os.mkdir(cfg.base_dir)
-    for dir_name in ('ckpts', 'data', 'videos'):
-        path = os.path.join(cfg.base_dir, dir_name)
-        if not os.path.exists(cfg.base_dir):
-            os.mkdir(path)
-
     torch.manual_seed(cfg.training.seed)
     np.random.seed(cfg.training.seed)
+    utils.prepare_dirs(cfg)
 
-    train_dataloader, val_dataloader, info = load_data(cfg.data)
-    cfg.training.train_steps, cfg.training.val_steps = info['train_size'], info['val_size']
+    # prepare data
+    resume = cfg.training.wandb_run_id != ''
+    print(f'if resume training: {resume}')
+    # env = hydra.utils.instantiate(cfg.env)
+    train_dataloader, val_dataloader, info = load_data(cfg.data, None, resume=resume)
+    cfg.training.train_steps, cfg.training.val_steps = info['train_size'], min(info['val_size'], 300)
 
     wandb.init(
         config=OmegaConf.to_object(cfg),
@@ -189,7 +184,7 @@ def main(cfg: DictConfig):
     policy = ACTPolicy(cfg, mean=info['coefs']['cameras_mean'], std=info['coefs']['cameras_std'])
     wandb.watch(policy)
 
-    train(policy, train_dataloader, val_dataloader, cfg.training)
+    train(policy, train_dataloader, val_dataloader, cfg.training, resume)
     wandb.finish()
 
 

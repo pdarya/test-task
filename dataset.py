@@ -29,16 +29,23 @@ class DemoDataset(IterableDataset):
         update_buffer_probability: float = 0.3,
         actions_num: int = 16,
         full_demo: bool = False,
+        resume: bool = False,
     ):
         self.full_demo = full_demo
+        self.dataset_path = dataset_path
         # data storage
         self.current_episode = defaultdict(list)  # dict of lists with observations/actions
-        self.episodes_info = []  # stored episodes TODO check for different workers
-        self.dataset_path = dataset_path
-        if os.path.exists(self.dataset_path):  # TODO delete
-            shutil.rmtree(self.dataset_path)
-        if not os.path.exists(self.dataset_path):
-            os.makedirs(self.dataset_path)
+        if resume:
+            with open(os.path.join(self.dataset_path, 'info.json'), 'r') as info_file:
+                self.episodes_info = json.load(info_file)
+        else:
+            self.episodes_info = []  # stored episodes TODO check for different workers
+
+        if not resume:
+            if os.path.exists(self.dataset_path):
+                shutil.rmtree(self.dataset_path)
+            if not os.path.exists(self.dataset_path):
+                os.makedirs(self.dataset_path)
 
         # dataset usage
         self.episodes_buffer = OrderedDict()
@@ -47,7 +54,13 @@ class DemoDataset(IterableDataset):
         self.actions_num = actions_num  # actions to predict
 
         self.stats = defaultdict(lambda: 0)
-        self.normalization_coefs = {}
+        if resume:
+            with open(os.path.join(self.dataset_path.replace('val', 'train'), 'stats.json'), 'r') as stats_file:
+                self.normalization_coefs = json.load(stats_file)
+                for key, value in self.normalization_coefs.items():
+                    self.normalization_coefs[key] = np.array(value)
+        else:
+            self.normalization_coefs = {}
 
     def size(self):
         """ number of ts stored """
@@ -101,7 +114,7 @@ class DemoDataset(IterableDataset):
         # print(f'adding episode with length {len(demo.timesteps)}')
         for idx, ts in enumerate(demo.timesteps):
             if self.full_demo:
-                last = (idx == len(demo.timesteps - 1))
+                last = (idx == (len(demo.timesteps) - 1))
             else:
                 last = ts.termination or ts.truncation
             self.add(
@@ -224,3 +237,11 @@ class DemoDataset(IterableDataset):
                     stats_file,
                     indent=4,
                 )
+
+        # info file to resume training
+        with open(os.path.join(self.dataset_path, 'info.json'), 'w+') as info_file:
+            json.dump(
+                self.episodes_info,
+                info_file,
+                indent=4,
+            )

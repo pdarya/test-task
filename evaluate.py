@@ -43,7 +43,8 @@ def eval(cfg):
 
     # load policy
     policy = ACTPolicy(cfg, mean=stats['cameras_mean'], std=stats['cameras_std'])
-    loading_status = policy.load_state_dict(torch.load(cfg.evaluation.ckpt_path))
+    checkpoint = torch.load(cfg.evaluation.ckpt_path)
+    loading_status = policy.load_state_dict(checkpoint)
     print(loading_status)
     policy.cuda()
     policy.eval()
@@ -70,7 +71,7 @@ def eval(cfg):
         with torch.inference_mode():
             for t in tqdm(range(max_timesteps)):
                 # for visualization
-                image_list.append({camera_name: obs[camera_name] for camera_name in ['rgb_head', 'rgb_right_wrist', 'rgb_left_wrist']})
+                image_list.append({camera_name: obs[camera_name] for camera_name in ['rgb_head', 'rgb_left_wrist', 'rgb_right_wrist']})
 
                 # prepare model input
                 qpos, camera_images = get_model_input(obs, pre_process_qpos)
@@ -79,7 +80,7 @@ def eval(cfg):
                 if t % query_frequency == 0:
                     all_actions = policy(qpos, camera_images)
                 if cfg.evaluation.temporal_agg:
-                    all_time_actions[[t], t:t + cfg.num_actions] = all_actions
+                    all_time_actions[[t], t:t + cfg.model.num_actions] = all_actions
                     actions_for_curr_step = all_time_actions[:, t]
                     actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
                     actions_for_curr_step = actions_for_curr_step[actions_populated]
@@ -98,13 +99,13 @@ def eval(cfg):
                 # step the environment
                 obs, reward, terminated, truncated, info = env.step(action_to_apply)
 
-                # for visualization
+                # for visualizations
                 qpos_list.append(qpos.cpu().numpy())
                 applied_actions.append(action_to_apply)
                 rewards.append(reward)
 
                 if terminated:
-                    image_list.append({camera_name: obs[camera_name] for camera_name in ['rgb_head', 'rgb_right_wrist', 'rgb_left_wrist']})
+                    image_list.append({camera_name: obs[camera_name] for camera_name in ['rgb_head', 'rgb_left_wrist', 'rgb_right_wrist']})
                     break
 
         print(f'rollout #{rollout_id}, ts: {t}, success={np.sum(rewards) > 0}')
