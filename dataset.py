@@ -25,7 +25,7 @@ class DemoDataset(IterableDataset):
     def __init__(
         self,
         dataset_path: str = 'data',
-        max_episodes_buffer_size: int = 10,
+        max_episodes_buffer_size: int = 30,
         update_buffer_probability: float = 0.3,
         actions_num: int = 16,
         full_demo: bool = False,
@@ -110,6 +110,8 @@ class DemoDataset(IterableDataset):
                     f.write(bs.read())
 
     def add_episode(self, demo):
+        if sum([ts.reward for ts in demo.timesteps]) == 0:  # do not add unsuccessful demos for bc
+            return
         self.current_episode = defaultdict(list)
         # print(f'adding episode with length {len(demo.timesteps)}')
         for idx, ts in enumerate(demo.timesteps):
@@ -138,11 +140,11 @@ class DemoDataset(IterableDataset):
         assert num_workers <= len(self.episodes_info), f'need to reduce dataloader workers number {num_workers} > {len(self.episodes_info)}'
 
         # do not update filled buffer with some probability
-        if len(self.episodes_buffer) == self.max_episodes_buffer_size and np.random.rand() > self.update_buffer_probability:
-            return
+        # if len(self.episodes_buffer) == self.max_episodes_buffer_size and np.random.rand() > self.update_buffer_probability:
+        #     return
 
-        if len(self.episodes_buffer) == self.max_episodes_buffer_size:
-            self.episodes_buffer.popitem(last=False)  # pop oldest episode
+        # if len(self.episodes_buffer) == self.max_episodes_buffer_size:
+        #     self.episodes_buffer.popitem(last=False)  # pop oldest episode
 
         # try to load new episode to buffer
         episode_idxs = np.random.permutation(np.arange(worker_id, len(self.episodes_info), num_workers))
@@ -158,18 +160,16 @@ class DemoDataset(IterableDataset):
             self.episodes_buffer[episode_idx] = episode
 
             if len(self.episodes_buffer) == self.max_episodes_buffer_size:
-                break
+                raise RuntimeError()
 
     def sample_single(self):
         # keep k episodes in memory (for every worker)
         # every n samples fetch new episodes
         # prepare sample from current keeped episode (return next m actions maybe padded)
 
-        self.update_stored_episodes()
-
         episode_idx = np.random.choice(list(self.episodes_buffer.keys()))  # select episode
         episode_size = self.episodes_info[episode_idx]['size']
-        ts_idx = np.random.randint(0, episode_size - 1)  # select ts
+        ts_idx = np.random.randint(0, episode_size)  # select ts
 
         # prepare sample
         sample = {}
@@ -189,11 +189,13 @@ class DemoDataset(IterableDataset):
                 axis=0,
             )
         sample['actions'] = actions_seq
-        sample['mask'] = np.arange(self.actions_num) >= actions_end_idx
+        sample['mask'] = np.arange(self.actions_num) >= len(actions_idxs)
+        assert len(actions_idxs) == self.actions_num - np.sum(sample['mask'])
 
         return sample
 
     def __iter__(self):
+        self.update_stored_episodes()
         while True:
             yield self.sample_single()
 

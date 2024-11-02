@@ -44,8 +44,9 @@ def eval(cfg):
     # load policy
     policy = ACTPolicy(cfg, mean=stats['cameras_mean'], std=stats['cameras_std'])
     checkpoint = torch.load(cfg.evaluation.ckpt_path)
-    loading_status = policy.load_state_dict(checkpoint)
+    loading_status = policy.load_state_dict(checkpoint['model_state_dict'])
     print(loading_status)
+
     policy.cuda()
     policy.eval()
     print(f'loaded model from: {cfg.evaluation.ckpt_path}')

@@ -93,7 +93,7 @@ class Backbone(BackboneBase):
             pretrained=is_main_process(),
             norm_layer=FrozenBatchNorm2d,
         ) # pretrained # TODO do we want frozen batch_norm??
-        num_channels = 512 if name in ('resnet18', 'resnet34') else 2048
+        num_channels = 256
         super().__init__(backbone, train_backbone, num_channels, return_interm_layers)
 
 
@@ -106,6 +106,8 @@ class Joiner(nn.Sequential):
         out: List[NestedTensor] = []
         pos = []
         for name, x in xs.items():
+            if name != '2':
+                continue
             out.append(x)  # image features
             pos.append(self[1](x).to(x.dtype))  # positional embeddings
 

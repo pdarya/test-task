@@ -16,7 +16,7 @@ model:
   backbone:
     type: 'resnet18'
     train_backbone: true
-    return_interm_layers: false
+    return_interm_layers: true
     dilation: false  # ??
     positional_encoding:
       type: 'sine'
@@ -24,8 +24,8 @@ model:
 
   transformer:
     enc_layers: 4
-    dec_layers: 6
-    dim_feedforward: 2048
+    dec_layers: 1
+    dim_feedforward: 3200
     hidden_dim: ${model.hidden_dim}
     dropout: 0.1
     nheads: 8
@@ -33,21 +33,21 @@ model:
 
 optimizer:
   lr_backbone: 1e-5
-  lr: 5e-5
+  lr: 1e-4
   weight_decay: 1e-4
 
 data:
     data_dir: ${base_dir}/data
     demos_cnt: 60
     train_ratio: 0.95
-    batch_size: 64
-    num_workers: 4
+    batch_size: 512
+    num_workers: 8
     actions_num: ${model.num_actions}
     full_demo: false
 
 training:
   seed: 0
-  num_epochs: 500
+  num_epochs: 160
   train_steps: None  # redefine inside
   val_steps: None  # redefine inside
   save_ckpt_frequency: 10
@@ -57,10 +57,10 @@ training:
 
 evaluation:
   seed: 0
-  ckpt_path: ${training.ckpt_dir}/policy_epoch_60_seed_0.ckpt  # best_policy.ckpt
+  ckpt_path: ${training.ckpt_dir}/last.ckpt  # epoch_50_seed_0.ckpt  # best_policy.ckpt
   temporal_agg: true
-  max_timesteps: 200  # episode length
-  num_rollouts: 3
+  max_timesteps: 100  # episode length
+  num_rollouts: 25
   stats_file_path: ${data.data_dir}/train/stats.json
   k: 0.01
   save_video: true

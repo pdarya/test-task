@@ -15,7 +15,7 @@ import wandb
 from bigym.action_modes import JointPositionActionMode, PelvisDof
 from bigym.bigym_env import CONTROL_FREQUENCY_MAX  # 500 Hz
 from bigym.envs.reach_target import ReachTarget
-from bigym.envs.manipulation import FlipCup
+from bigym.envs.move_plates import MovePlate
 from bigym.utils.observation_config import ObservationConfig, CameraConfig
 from demonstrations.demo_player import DemoPlayer
 from demonstrations.demo_store import DemoStore
@@ -29,7 +29,7 @@ torch.backends.cudnn.benchmark = True
 
 
 def load_data(cfg: DictConfig, env, resume: bool = False):
-    env = ReachTarget(  # TODO from hydra config and check
+    env = MovePlate(  # TODO from hydra config and check
         action_mode=JointPositionActionMode(
             absolute=True,
             floating_base=True,  # only absolute = false ?
@@ -57,10 +57,10 @@ def load_data(cfg: DictConfig, env, resume: bool = False):
             dataset_path=os.path.join(cfg.data_dir, dataset_type),
             actions_num=cfg.actions_num,
             full_demo=cfg.full_demo,
-            resume=True,  # TODO resume
+            resume=True,  # resume,  # TODO resume
         )
 
-    if False:  # not resume
+    if False:  # not resume:  # TODO
         metadata = Metadata.from_env(env)
         demo_store = DemoStore()
         print(f'going to load #{cfg.demos_cnt} demos')
@@ -81,7 +81,7 @@ def load_data(cfg: DictConfig, env, resume: bool = False):
             datasets[dataset_type].compute_stats(save_stats=save_stats)
 
     train_loader = DataLoader(datasets['train'], batch_size=cfg.batch_size, num_workers=cfg.num_workers, pin_memory=True)
-    val_loader = DataLoader(datasets['val'], batch_size=cfg.batch_size, num_workers=2, pin_memory=True)
+    val_loader = DataLoader(datasets['val'], batch_size=cfg.batch_size, num_workers=0, pin_memory=True)
 
     return train_loader, val_loader, {
         'coefs': datasets['train'].normalization_coefs,
@@ -91,12 +91,25 @@ def load_data(cfg: DictConfig, env, resume: bool = False):
 
 
 def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig, resume: bool = False):
-    print(f'will run {cfg.num_epochs} epochs, {cfg.train_steps} train steps and {cfg.val_steps} validation steps per epoch')
+    if resume:
+        # load last checkpoint
+        checkpoint = torch.load(os.path.join(cfg.ckpt_dir, f'last.ckpt'))
+        policy.load_state_dict(checkpoint['model_state_dict'])
+        policy.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        policy.cuda()
+        start_epoch = checkpoint['epoch'] + 1
+    else:
+        start_epoch = 0
+    print(f'will run {cfg.num_epochs} epochs in total starting from epoch {start_epoch}, {cfg.train_steps} train steps and {cfg.val_steps} validation steps per epoch')
+
     validation_history = []
     min_val_loss = np.inf
     best_ckpt_info = None
-    for epoch in range(cfg.num_epochs):
+    for epoch in range(start_epoch, cfg.num_epochs):
         print(f'epoch #{epoch}')
+        if epoch != 0 and epoch % 50 == 0:
+            for g in policy.optimizer.param_groups:
+                g['lr'] *= 0.5
         # validation
         with torch.inference_mode():
             policy.eval()
@@ -173,14 +186,22 @@ def main(cfg: DictConfig):
     print(f'if resume training: {resume}')
     # env = hydra.utils.instantiate(cfg.env)
     train_dataloader, val_dataloader, info = load_data(cfg.data, None, resume=resume)
-    cfg.training.train_steps, cfg.training.val_steps = info['train_size'], min(info['val_size'], 300)
+    cfg.training.train_steps, cfg.training.val_steps = 300, min(info['val_size'], 1)
 
-    wandb.init(
-        config=OmegaConf.to_object(cfg),
-        project='bigym_act',
-        name=f"run_{datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}",
-        # mode='disabled',
-    )
+    if resume:
+        wandb.init(
+            entity='dapoli',
+            project='bigym_act',
+            id=cfg.training.wandb_run_id,
+            resume='must',
+        )
+    else:
+        wandb.init(
+            config=OmegaConf.to_object(cfg),
+            project='bigym_act',
+            name=f"run_{datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}",
+        )
+
     policy = ACTPolicy(cfg, mean=info['coefs']['cameras_mean'], std=info['coefs']['cameras_std'])
     wandb.watch(policy)
 
