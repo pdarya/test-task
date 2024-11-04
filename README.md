@@ -1,8 +1,6 @@
-successful rollouts examples:
-
 ### examples
 
-unsuccessfull rollouts:
+successfull rollouts:
 
 https://github.com/user-attachments/assets/21ed72bc-993b-4f9c-a3be-96eb8a9b64b7
 
