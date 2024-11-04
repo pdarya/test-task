@@ -111,7 +111,7 @@ def eval(cfg):
 
         print(f'rollout #{rollout_id}, ts: {t}, success={np.sum(rewards) > 0}')
         episode_returs.append(np.sum(rewards))
-        if cfg.evaluation.save_video and rollout_id < 5:
+        if cfg.evaluation.save_video:
             save_videos(image_list, video_path=os.path.join(cfg.evaluation.videos_dir, f'rollout_{rollout_id}.mp4'))
 
     success_rate = np.mean(episode_returs)

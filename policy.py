@@ -57,6 +57,7 @@ class ACTPolicy(nn.Module):
             action_dim=cfg.action_dim,
             observation_dim=cfg.observation_dim,
             latent_dim=cfg.latent_dim,
+            use_task_emb=cfg.use_task_emb,
         )
 
         n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -64,7 +65,7 @@ class ACTPolicy(nn.Module):
 
         return model
 
-    def __call__(self, qpos, image, actions=None, is_pad=None):
+    def __call__(self, qpos, image, actions=None, is_pad=None, task_type=None):
         # print('input data shape:', qpos.shape, qpos.dtype, image.shape, image.dtype, actions.shape, actions.dtype, is_pad.shape, is_pad.dtype)
         image = self.normalize(image)
         # print('image after normalization:', torch.min(image), torch.max(image), image)
@@ -73,7 +74,7 @@ class ACTPolicy(nn.Module):
             actions = actions[:, :self.model.num_actions]
             is_pad = is_pad[:, :self.model.num_actions]
 
-            a_hat, is_pad_hat, (mu, logvar) = self.model(qpos, image, None, actions, is_pad)
+            a_hat, is_pad_hat, (mu, logvar) = self.model(qpos, image, None, actions, is_pad, task_type=task_type)
             total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
             loss_dict = dict()
             all_l1 = F.l1_loss(actions, a_hat, reduction='none')
@@ -85,5 +86,5 @@ class ACTPolicy(nn.Module):
             return loss_dict
 
         else:  # inference time
-            a_hat, _, (_, _) = self.model(qpos, image)  # no action, sample from prior
+            a_hat, _, (_, _) = self.model(qpos, image, task_type=task_type)  # no action, sample from prior
             return a_hat

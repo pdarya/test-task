@@ -21,6 +21,10 @@ class DemoDataset(IterableDataset):
         'rgb_left_wrist',
         'rgb_right_wrist',
     )
+    TASK_TO_ID = {
+        'MovePlate': 0,
+        'MoveTwoPlates': 1,
+    }
 
     def __init__(
         self,
@@ -73,8 +77,8 @@ class DemoDataset(IterableDataset):
         reward: float,
         terminal: bool,
         truncated: bool,
-        episode_id: str = '',
-        env_name: str = '',
+        episode_id: str,
+        env_name: str,
         last: bool = False,
     ):
         self.current_episode['actions'].append(action)
@@ -102,6 +106,7 @@ class DemoDataset(IterableDataset):
                 id=episode_id,
                 size=len(self.current_episode['actions']),
                 file_path=file_path,
+                task_type=env_name,
             ))
             with io.BytesIO() as bs:
                 np.savez_compressed(bs, **self.current_episode)
@@ -177,6 +182,7 @@ class DemoDataset(IterableDataset):
         sample['qpos'] = ((self.episodes_buffer[episode_idx]['qpos'][ts_idx]
                           - self.normalization_coefs['qpos_mean']) / self.normalization_coefs['qpos_std']).astype(np.float32)
         sample['cameras'] = (self.episodes_buffer[episode_idx]['cameras'][ts_idx] / 255.).astype(np.float32)
+        sample['task_type'] = self.TASK_TO_ID[self.episodes_info[episode_idx]['task_type']]
 
         # add actions (target)
         actions_end_idx = min(ts_idx + self.actions_num, episode_size)

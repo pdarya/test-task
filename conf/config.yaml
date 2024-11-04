@@ -12,11 +12,12 @@ model:
   observation_dim: ${observation_dim}
   latent_dim: 32
   hidden_dim: 512
+  use_task_emb: false
 
   backbone:
     type: 'resnet18'
     train_backbone: true
-    return_interm_layers: true
+    return_interm_layers: false
     dilation: false  # ??
     positional_encoding:
       type: 'sine'
@@ -57,17 +58,17 @@ training:
 
 evaluation:
   seed: 0
-  ckpt_path: ${training.ckpt_dir}/last.ckpt  # epoch_50_seed_0.ckpt  # best_policy.ckpt
+  ckpt_path: ${training.ckpt_dir}/epoch_150_seed_0.ckpt  # epoch_50_seed_0.ckpt  # best_policy.ckpt
   temporal_agg: true
-  max_timesteps: 100  # episode length
-  num_rollouts: 25
+  max_timesteps: 500  # episode length
+  num_rollouts: 20
   stats_file_path: ${data.data_dir}/train/stats.json
   k: 0.01
   save_video: true
   videos_dir: ${base_dir}/videos
 
 env:
-  _target_: bigym.envs.reach_target.ReachTarget
+  _target_: bigym.envs.move_plates.MovePlate
   action_mode:
     _target_: bigym.action_modes.JointPositionActionMode
     absolute: true

@@ -115,9 +115,9 @@ def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig, 
             policy.eval()
             epoch_dicts = []
             for batch_idx, data in enumerate(itertools.islice(val_dataloader, cfg.val_steps)):
-                cameras, qpos, actions, mask = data['cameras'], data['qpos'], data['actions'], data['mask']
-                cameras, qpos, actions, mask = cameras.cuda(), qpos.cuda(), actions.cuda(), mask.cuda()
-                forward_dict = policy(qpos, cameras, actions, mask)  # l1, kl, loss
+                cameras, qpos, actions, mask, task_type = data['cameras'], data['qpos'], data['actions'], data['mask'], data['task_type']
+                cameras, qpos, actions, mask, task_type = cameras.cuda(), qpos.cuda(), actions.cuda(), mask.cuda(), task_type.cuda()
+                forward_dict = policy(qpos, cameras, actions, mask, task_type)  # l1, kl, loss
                 epoch_dicts.append(utils.detach_dict(forward_dict))
                 if batch_idx % cfg.log_interval == 0:
                     wandb.log(utils.add_prefix(forward_dict, 'batch/val/', {'batch': epoch * cfg.val_steps + batch_idx}))
@@ -142,9 +142,9 @@ def train(policy: ACTPolicy, train_dataloader, val_dataloader, cfg: DictConfig, 
         policy.train()
         policy.optimizer.zero_grad()
         for batch_idx, data in enumerate(itertools.islice(train_dataloader, cfg.train_steps)):
-            cameras, qpos, actions, mask = data['cameras'], data['qpos'], data['actions'], data['mask']
-            cameras, qpos, actions, mask = cameras.cuda(), qpos.cuda(), actions.cuda(), mask.cuda()
-            forward_dict = policy(qpos, cameras, actions, mask)  # l1, kl, loss
+            cameras, qpos, actions, mask, task_type = data['cameras'], data['qpos'], data['actions'], data['mask'], data['task_type']
+            cameras, qpos, actions, mask, task_type = cameras.cuda(), qpos.cuda(), actions.cuda(), mask.cuda(), task_type.cuda()
+            forward_dict = policy(qpos, cameras, actions, mask, task_type)  # l1, kl, loss
             # backward
             loss = forward_dict['loss']
             loss.backward()
